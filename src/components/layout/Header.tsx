@@ -3,8 +3,9 @@ import { Link } from 'react-router-dom';
 import { useWalletStore } from '../../store/walletStore';
 import { Button } from '../common/Button';
 import { formatAddress } from '../../utils/formatters';
-import verdexLogo from '../../../verdex logo.png';
-import metamaskIcon from '../../../Metamask-icon-fox-developer.svg';
+
+const verdexLogo = '/verdex-logo.png';
+const metamaskIcon = '/metamask.svg';
 
 export const Header: React.FC = () => {
   const { address, isConnected, connect, disconnect } = useWalletStore();
