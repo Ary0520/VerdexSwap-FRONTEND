@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@apollo/client": "^3.14.1",
+    "@metamask/sdk-react": "^0.33.1",
     "ethers": "^6.11.0",
     "graphql": "^16.13.1",
     "lightweight-charts": "^5.1.0",

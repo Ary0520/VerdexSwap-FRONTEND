@@ -1,9 +1,30 @@
 import { create } from 'zustand';
 import { BrowserProvider, JsonRpcSigner } from 'ethers';
+import { MetaMaskSDK } from '@metamask/sdk';
 import { useNotificationStore } from './notificationStore';
 
 const ARBITRUM_SEPOLIA_CHAIN_ID = 421614n;
 const ARBITRUM_SEPOLIA_HEX = '0x66eee';
+
+// Lazily initialised SDK instance for mobile fallback
+let _mobileSDK: MetaMaskSDK | null = null;
+const getMobileSDK = (): MetaMaskSDK => {
+  if (!_mobileSDK) {
+    _mobileSDK = new MetaMaskSDK({
+      dappMetadata: { name: 'VerdexSwap', url: window.location.host },
+      logging: { developerMode: false },
+    });
+  }
+  return _mobileSDK;
+};
+
+// Returns the active ethereum provider — extension on desktop, SDK on mobile
+const getEthereumProvider = async (): Promise<any> => {
+  if (typeof window.ethereum !== 'undefined') return window.ethereum;
+  const sdk = getMobileSDK();
+  await sdk.init();
+  return sdk.getProvider();
+};
 
 interface WalletState {
   address: string | null;
@@ -17,14 +38,14 @@ interface WalletState {
   refreshSigner: () => Promise<void>;
 }
 
-// Helper to initialise provider + signer from the current window.ethereum state
-const buildProviderAndSigner = async (): Promise<{
+// Helper to initialise provider + signer from the current ethereum provider
+const buildProviderAndSigner = async (ethereum: any): Promise<{
   provider: BrowserProvider;
   signer: JsonRpcSigner;
   address: string;
   chainId: bigint;
 }> => {
-  const provider = new BrowserProvider(window.ethereum);
+  const provider = new BrowserProvider(ethereum);
   const network = await provider.getNetwork();
   const signer = await provider.getSigner();
   const address = await signer.getAddress();
@@ -42,42 +63,44 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   refreshSigner: async () => {
     if (typeof window.ethereum === 'undefined') return;
     try {
-      const { provider, signer, address, chainId } = await buildProviderAndSigner();
+      const { provider, signer, address, chainId } = await buildProviderAndSigner(window.ethereum);
       set({ provider, signer, address, chainId, isConnected: true });
     } catch {
-      // wallet disconnected / locked
       get().disconnect();
     }
   },
 
   connect: async () => {
-    if (typeof window.ethereum === 'undefined') {
-      useNotificationStore.getState().addNotification({
-        type: 'error',
-        title: 'Wallet Error',
-        message: 'Please install MetaMask!',
-      });
-      return;
-    }
-
     set({ isConnecting: true });
 
     try {
+      const ethereum = await getEthereumProvider();
+
+      if (!ethereum) {
+        useNotificationStore.getState().addNotification({
+          type: 'error',
+          title: 'Wallet Error',
+          message: 'Please install MetaMask!',
+        });
+        set({ isConnecting: false });
+        return;
+      }
+
       // Request account access
-      const provider = new BrowserProvider(window.ethereum);
+      const provider = new BrowserProvider(ethereum);
       await provider.send('eth_requestAccounts', []);
 
       // Check network – switch if needed
       const network = await provider.getNetwork();
       if (network.chainId !== ARBITRUM_SEPOLIA_CHAIN_ID) {
         try {
-          await window.ethereum.request({
+          await ethereum.request({
             method: 'wallet_switchEthereumChain',
             params: [{ chainId: ARBITRUM_SEPOLIA_HEX }],
           });
         } catch (switchError: any) {
           if (switchError.code === 4902) {
-            await window.ethereum.request({
+            await ethereum.request({
               method: 'wallet_addEthereumChain',
               params: [
                 {
@@ -95,8 +118,8 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         }
       }
 
-      // Re-create provider AFTER potential network switch so the signer is on the correct chain
-      const { provider: freshProvider, signer, address, chainId } = await buildProviderAndSigner();
+      // Re-create provider AFTER potential network switch
+      const { provider: freshProvider, signer, address, chainId } = await buildProviderAndSigner(ethereum);
 
       set({
         address,
@@ -107,8 +130,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         isConnecting: false,
       });
 
-      // Register MetaMask event listeners (once – guard against duplicates)
-      const ethereum = window.ethereum as any;
+      // Register event listeners once
       if (!ethereum._verdexListenersAttached) {
         ethereum._verdexListenersAttached = true;
 
@@ -120,8 +142,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
           }
         });
 
-        ethereum.on('chainChanged', (_chainId: string) => {
-          // Always refresh signer when chain changes
+        ethereum.on('chainChanged', () => {
           get().refreshSigner();
         });
 
